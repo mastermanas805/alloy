@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.16.1](https://github.com/grafana/alloy/compare/v1.16.0...v1.16.1) (2026-04-27)
+
+
+### Bug Fixes 🐛
+
+* **deb:** Restart Alloy only on upgrade in postinst script [backport] ([#6129](https://github.com/grafana/alloy/issues/6129)) ([14481bc](https://github.com/grafana/alloy/commit/14481bcf37230f8a34c68b766be436d918f507aa))
+* **logging:** Fix startup deadlock when components log before logging config is evaluated [backport] ([#6135](https://github.com/grafana/alloy/issues/6135)) ([f1eb20e](https://github.com/grafana/alloy/commit/f1eb20e523319152e53449fbb3d584e1c9fb145d))
+
 ## [1.16.0](https://github.com/grafana/alloy/compare/v1.15.0...v1.16.0) (2026-04-22)
 
 
