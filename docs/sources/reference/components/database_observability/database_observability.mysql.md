@@ -170,6 +170,26 @@ The `gcp` block supplies the identifying information for the GCP Cloud SQL datab
 | `wait_event_min_duration`        | `duration` | Minimum duration for a wait event to be collected. Set to "0s" to disable filtering and collect all wait events regardless of their duration.  | `"1us"` | no       |
 | `enable_pre_classified_wait_events` | `boolean` | When `true`, emits telemetry data with pre-classified wait event information. | `false` | no       |
 
+#### `wait_event_type` values emitted by `wait_event_v2`
+
+When `enable_pre_classified_wait_events` is `true`, the `wait_event_v2` log line reports `wait_event_type` as one of six pre-classified bucket names derived from the raw `performance_schema` `EVENT_NAME`. The buckets map directly to distinct DBA triage playbooks.
+
+| Bucket | Maps from `wait_event_name` | What it means | First diagnostic step |
+|---|---|---|---|
+| `IO Wait` | `wait/io/file/*`, `wait/io/table/*` (excluding replication carve-outs below) | Disk / file / page I/O | Check storage saturation, hot tables, binlog write rate |
+| `Network Wait` | `wait/io/socket/*` | Client ↔ server socket I/O | Check application latency / connection pool |
+| `Lock Wait` | `wait/io/lock/*`, `wait/lock/*` | Heavyweight user-visible cascade lock — table, metadata, or row lock held by another session | `data_locks` / `data_lock_waits` / `SHOW ENGINE INNODB STATUS` to find the blocker |
+| `Engine Wait` | `wait/synch/*` (mutex, cond, rwlock, prlock, sxlock — excluding replication carve-outs below) | Engine-internal synchronization — `mysqld` is contending with itself, no user-level blocker | Drill down on `wait_event_name`; tune `table_open_cache`, `sync_binlog`, group-commit settings, hardware fsync latency |
+| `Replication Wait` | `wait/io/file/sql/relaylog*`; `wait/synch/<primitive>/sql/Slave_*`; `wait/synch/<primitive>/sql/Relay_log_info*` | Relay-log I/O and slave/relay coordination | Cross-reference with `SHOW SLAVE STATUS` / `performance_schema.replication_*` |
+| `Other Wait` | Anything that does not start with `wait/`, plus `wait/` prefixes not covered above | Future or unrecognized event names | Usually benign; investigate only if volume is anomalous |
+
+##### Notes for dashboard authors
+
+- **`Engine Wait` and `Lock Wait` are disjoint by design.** Engine synch primitives have hold times measured in microseconds, are invisible to `data_locks`/`SHOW ENGINE INNODB STATUS`, and are remediated by configuration changes (cache sizes, fsync tuning, write-rate reduction) rather than session management. Cascade locks (`wait/lock/*`) have an identifiable blocker session and are remediated by killing or rewriting the offending transaction.
+- **Beware the `MDL_lock::rwlock` / `wait/lock/metadata/sql/mdl` distinction.** The user-visible MDL is `wait/lock/metadata/sql/mdl` and classifies as `Lock Wait`. The `wait/synch/prlock/sql/MDL_lock::rwlock` event is the rwlock protecting the MDL bookkeeping data structure, not the MDL itself, and classifies as `Engine Wait`. They look similar but require different responses.
+- **Group-commit `wait/synch/cond/sql/MYSQL_BIN_LOG::COND_done` can dominate `Engine Wait` on write-heavy workloads.** This is followers in a binlog group commit waiting for the leader's flush. The remediation is `sync_binlog` / `binlog_group_commit_sync_delay` / faster fsync — **not** session-level intervention.
+- Replication carve-outs run *before* the generic `wait/synch/*` → `Engine Wait` rule. `wait/synch/mutex/sql/Relay_log_info::pending_jobs_lock` therefore classifies as `Replication Wait`, not `Engine Wait`.
+
 ### `setup_actors`
 
 | Name                       | Type       | Description                                                            | Default | Required |
