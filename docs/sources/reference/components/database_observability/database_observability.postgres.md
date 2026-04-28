@@ -142,6 +142,26 @@ The `gcp` block supplies the identifying information for the GCP Cloud SQL datab
 | `exclude_current_user`    | `bool`     | Do not collect query samples for current database user.       | `true`  | no       |
 | `enable_pre_classified_wait_events`   | `boolean`  | When `true`, emits telemetry data with pre-classified wait event information. | `false` | no       |
 
+#### `wait_event_type` values emitted by `wait_event_v2`
+
+When `enable_pre_classified_wait_events` is `true`, the `wait_event_v2` log line reports `wait_event_type` as one of six pre-classified bucket names instead of the raw Postgres value. The buckets map directly to distinct DBA triage playbooks.
+
+| Bucket | Maps from | What it means | First diagnostic step |
+|---|---|---|---|
+| `IO Wait` | `wait_event_type` of `IO` | Disk / file / page I/O | Check storage saturation; identify hot relations |
+| `Network Wait` | `wait_event_type` of `Client` (excluding replication names) | Client ↔ server socket I/O | Check application latency / connection pool |
+| `Lock Wait` | `wait_event_type` of `Lock` | Heavyweight user-visible cascade lock — your transaction is blocked by another transaction's lock | `pg_locks` + `pg_blocking_pids` to find the blocker |
+| `Engine Wait` | `wait_event_type` of `LWLock`, `BufferPin`, or non-replication `IPC` | Engine-internal synchronization — the server is contending with itself, no user-level blocker | Drill down on `wait_event` to identify the hot LWLock; tune `shared_buffers` / `wal_buffers` / connection count |
+| `Replication Wait` | Any `wait_event` name starting with `SyncRep`, `WalSender`, `WalReceiver`, `Recovery`, `LogicalApply`, `LogicalLauncher`, `LogicalSync`, `LogicalParallelApply`, `LogicalRep`, `ReplicationSlot`, or `ReplicationOrigin` (regardless of `wait_event_type`) | Streaming or logical replication activity — both informational steady-state and actionable lag signals | Cross-reference with `pg_stat_replication`; filter by `wait_event` to separate idle (`WalSenderWaitForWAL`) from lag (`SyncRep`, `Recovery*`) |
+| `Other Wait` | `wait_event_type` of `Activity`, `Timeout`, `Extension`, `InjectionPoint`, the literal `idle` event, and anything unrecognized | Idle backends, timers, extension-defined waits, future events not yet known to {{< param "PRODUCT_NAME" >}} | Usually benign; investigate only if volume is anomalous |
+
+##### Notes for dashboard authors
+
+- **`Replication Wait` is heterogeneous.** It bundles steady-state liveness (`Client:WalSenderWaitForWAL` on a primary that is caught up) with actionable lag (`SyncRep` blocked on a slow replica, `Recovery*` falling behind on a standby). Aggregate volume in this bucket reflects replication topology health, not query performance. For SLO alerts, target specific `wait_event`s (for example `SyncRep`, `Recovery*`) rather than the bucket total. A sudden *drop* in `Replication Wait` is not necessarily good — it can indicate replicas have disconnected.
+- **`Engine Wait` and `Lock Wait` are disjoint by design.** `Engine Wait` events have no blocker visible in `pg_locks` and the remediation is configuration tuning (often hours-to-days), not session management. Conversely, a `Lock Wait` always has an identifiable blocker session. Keeping them separate prevents on-call DBAs from running the wrong playbook on engine-contention spikes.
+- **For query-performance dashboards, filter `queryid != "" and queryid != "0"`** to exclude background-process waits (walsender, autovacuum, bgworker). Backends without a user query in flight emit `queryid="0"` because Postgres reports `pg_stat_activity.query_id` as `NULL` in that state. Without this filter, `Replication Wait` is dominated by idle walsender activity that has nothing to do with user query latency.
+- The replication name-rule runs *before* the type switch, so `Activity:WalSenderMain` (older Postgres versions) and `Client:WalSenderWaitForWAL` (Postgres 14+) both classify as `Replication Wait` — bucket assignment is stable across Postgres versions.
+
 ### `schema_details`
 
 | Name               | Type       | Description                                                           | Default | Required |
